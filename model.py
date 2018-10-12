@@ -4,23 +4,92 @@ import numpy as np
 import os
 import matplotlib.pyplot as plt
 from PyQt5.QtCore import pyqtSignal, QThread
+from database import Database
+import imageio
+import time
+from threading import Thread
+
 
 class GlobalModel:
+    def __init__(self):
+        self.database = Database()
+        self.database.load_json("database.json")
     def add_observer(self, observer):
         raise NotImplementedError
 
 class VideoModel(GlobalModel):
+
     total_frames = None
     observers = set()
     cap = None
     filepath = ""
+    start_in_eeg = 0
+    dyad = 0
+    camera = 0
+    read_frame_via_opencv = False
 
-    def __init__(self, filepath = None):
+    def __init__(self, dyad, camera):
+        super().__init__()
         self.current_frame = 10
-        self.filepath = filepath
+        self.dyad = dyad
+        self.camera = camera
+        self.filepath = self.get_filepath()
         self.cap = cv2.VideoCapture(self.filepath)
+        self.video_reader = imageio.get_reader(self.filepath)
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        self.factor = self.total_frames//10000
+        self.set_start_pos()
+        self.keep_playing = False
+
+
+        if(self.filepath != None):
+            self.parse_filepath_attributes()
+
+    def parse_filepath_attributes(self):
+        dyad = -1
+        camera = -1
+        try:
+            dyad = int(re.search("P[0-9]+", self.filepath).group(0)[1:])
+            camera = int(re.search("C[0-9]+", self.filepath).group(0)[1:])
+        except:
+            pass
+
+        self.dyad = dyad
+        self.camera = camera
+
+    def get_start_pos(self):
+        """ Returns beginning of video. Unit = EEG sampling frequency.
+        """
+        return self.start_in_eeg
+
+    def set_dyad(self, dyad):
+        self.dyad = dyad
+
+    def set_start_pos(self):###########################!!!!!!!!!!!!!!!!!!!!!!!!!!toxic
+        dyad = self.dyad
+        pos = 10000000000000000
+        pair = self.database.get_dict()
+        try:
+            for key, value in pair[str(dyad)]['eeg']['metainfo']['description'].items():#Search for R128
+                if(value == 'R128'):
+                    newpos = int(pair[str(dyad)]['eeg']['metainfo']['position'][key])
+                    if(newpos < pos):#find smallest R128 value
+                        pos = newpos
+        except:
+            pass
+
+        if(pos == 10000000000000000):
+            pos = 0
+
+        self.start_in_eeg = pos
+
+    def get_filepath(self):
+        ret = None
+        try:
+            ret = self.database.dictionary[str(self.dyad)]['video'][str(self.camera)]['path']
+        except:
+            raise FileNotFoundError("Filepath not found in database")
+        return ret
+
 
     def add_observer(self, observer):
         self.observers.add(observer)
@@ -29,26 +98,49 @@ class VideoModel(GlobalModel):
         for observer in self.observers:
             observer.update("video")
 
-    def change_time_to(self, pos_in_time):
-        self.set_current_video_frame(pos_in_time//self.factor)
-        self.notify_observers()
+    def get_pos(self):
+        return self.get_start_pos()+(self.current_frame/25)*500
 
+        #return self.get_start_pos()+self.current_frame
 
     def get_frame(self):
-        self.cap.set(1,self.current_frame)
-        ret, frame = self.cap.read()
-        return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        #return self.cap.retrieve(self.current_frame)[1]
+        if(self.read_frame_via_opencv):
+            self.cap.set(1,self.current_frame)
+            trial = 0
+            ret = False
+            while(not ret):
+                ret, frame = self.cap.read()
+                if(trial > 100):
+                    break
+            if(ret == False):
+                raise FileNotFoundError("Opencv couldnt retrive frames")
+            else:
+                return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            #return self.cap.retrieve(self.current_frame)[1]
+        else:
+            return self.video_reader.get_data(self.current_frame)
 
-    def set_current_video_frame(self, x):
-        #print("The position in the video is " + str(x))
+    def set_framenumber(self, x):
         if(x > self.total_frames):
             self.current_frame = self.total_frames-1
         else:
             self.current_frame = x
+        self.notify_observers()
 
+    def get_framenumber(self):
+        return self.current_frame
 
-    def get_amount_of_frames():
+    def frame_forward(self):
+        n = self.get_framenumber()+1
+        if(n < self.get_amount_of_frames()):
+            self.set_framenumber(n)
+
+    def frame_back(self):
+        n = self.get_framenumber()-1
+        if(n >= 0):
+            self.set_framenumber(n)
+
+    def get_amount_of_frames(self):
         return self.total_frames
 
     def add_observer(self, observer):
@@ -58,7 +150,7 @@ class VideoModel(GlobalModel):
         for observer in self.observers:
             observer.update()
 
-class EEGModel(GlobalModel):
+class DataModel(GlobalModel):
     data = None
     filepath = None
     title = None
@@ -67,8 +159,54 @@ class EEGModel(GlobalModel):
     observers = set()
     is_deleted = False #When model is to be removed
 
+    def __init__(self, filepath = None, channel = 0, dyad = None, datatype = None):
+        super().__init__()
+        self.filepath = filepath
+        self.is_deleted = False
+        self.datatype = None
+
+        if(channel!=None):
+            self.channel = channel
+
+        if(type(filepath) != type(None)):#Init with filepath
+            #TODO check if .eeg in filepath and raise error otherwise
+            self.set_filepath(filepath)
+            self.load_eeg_file()
+
+        elif(type(dyad) != type(None)):
+            if(type(datatype) == type(None)):
+                raise ValueError("Init via dyad requires specification of datatype")
+            self.datatype = datatype
+            self.set_dyad(dyad)#Also sets filepath
+
     def get_channel(self):
         return self.channel
+
+    def set_datatype(self, datatype):
+        self.datatype = datatype
+
+    def set_dyad(self, dyad):
+        self.dyad = dyad
+        self.filepath = self.get_filepath()
+        if(self.datatype == "eeg"):
+            self.load_eeg_file()
+        elif(self.datatype == None):
+            pass
+        else:
+            raise NotImplementedError("Motion not supported yet")
+        self.notify_observers()
+
+    def get_filepath(self):
+        if(self.datatype == "eeg"):
+            try:
+                ret = self.database.get_dict()[str(self.dyad)]['eeg']['path']
+            except:
+                raise FileNotFoundError("Filepath was not found in database")
+            return ret
+        elif(self.datatype == None):
+            pass
+        else:
+            raise NotImplementedError("Motion not supported yet")
 
     def set_channel(self, channel):
         self.channel = channel
@@ -85,9 +223,6 @@ class EEGModel(GlobalModel):
     def get_title(self):
         return self.title
 
-    def get_filepath(self, filepath):
-        return self.filepath
-
     def get_data(self):
         return self.data
 
@@ -97,21 +232,6 @@ class EEGModel(GlobalModel):
 
     def deleted(self):
         return self.is_deleted
-
-    def __init__(self, filepath = None, channel = 0):
-        self.filepath = filepath
-        self.is_deleted = False
-
-        if(channel!=None):
-            self.channel = channel
-
-        if(filepath != None):
-                self.set_filepath(filepath)
-                self.load_eeg_file()
-        else:
-            self.filepath = "Load data...!"
-            self.data = np.zeros(100)
-        self.set_title(os.path.basename(self.filepath) + "    Channel " + str(self.channel) )
 
     def add_observer(self, observer):
         self.observers.add(observer)
@@ -130,6 +250,8 @@ class EEGModel(GlobalModel):
             print("No filepath set")
             return None
 
+        self.set_title(os.path.basename(self.filepath) )
+
         n_channels = 64
         bytes_per_sample = 2 #Because int16
 
@@ -137,6 +259,13 @@ class EEGModel(GlobalModel):
         byte_size = os.path.getsize(self.filepath)
 
         nFrames =  byte_size // (bytes_per_sample * n_channels);
-        self.data = np.fromfile(self.filepath,dtype=my_type)["channel"+str(self.channel)]
+        data = np.array(np.fromfile(self.filepath,dtype=my_type))["channel"+str(self.get_channel())]
+
+        data = np.array(data, dtype= np.float32)
+        data[data==32767] = np.nan
+        data[data==-32768] = np.nan
+        data[data==-32767] = np.nan
+
+        self.data = data
 
         self.notify_observers()
