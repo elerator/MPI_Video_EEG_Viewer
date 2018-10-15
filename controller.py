@@ -121,3 +121,58 @@ class DataController(QDialog):
             if fileName:
                 self.model.set_filepath(fileName)
                 self.model.load_eeg_file()
+
+class MotionWindowSelector():
+    def __init__(self):
+        QMainWindow.__init__(self)
+
+        self.setMinimumSize(QSize(300, 300))
+
+        self.lines = []
+
+        self.xmin = 0
+        self.xmax = 0
+        self.ymin = 0
+        self.ymax = 0
+
+    def draw_rect(self, p1, p2):
+        self.lines = []
+        x1 = p1.x()
+        x2 = p2.x()
+        y1 = p1.y()
+        y2 = p2.y()
+
+        self.xmin = min(x1,x2)
+        self.xmax = max(x1,x2)
+        self.ymin = min(y1,y2)
+        self.ymax = max(y1,y2)
+
+        xmin = min(x1,x2)
+        xmax = max(x1,x2)
+        ymin = min(y1,y2)
+        ymax = max(y1,y2)
+
+        self.lines.append(QLine(QPoint(xmin,ymin),QPoint(xmin,ymax)))
+        self.lines.append(QLine(QPoint(xmin,ymax),QPoint(xmax,ymax)))
+        self.lines.append(QLine(QPoint(xmax,ymax),QPoint(xmax,ymin)))
+        self.lines.append(QLine(QPoint(xmax,ymin),QPoint(xmin,ymin)))
+        self.update()
+
+
+    def mousePressEvent(self,event):
+        self.startx=event.x()
+        self.starty=event.y()
+
+    def mouseReleaseEvent(self,event):
+        self.endx=event.x()
+        self.endy=event.y()
+        self.draw_rect(QPoint(self.startx,self.starty),QPoint(self.endx,self.endy))
+
+    def paintEvent(self,event):
+        QMainWindow.paintEvent(self, event)
+        painter = QPainter(self)
+        pen = QPen(Qt.black, 2, Qt.DashLine)
+
+        painter.setPen(pen)
+        for line in self.lines:
+            painter.drawLine(line)

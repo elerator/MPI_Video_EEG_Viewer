@@ -7,7 +7,6 @@ from PyQt5.QtCore import pyqtSignal, QThread
 from database import Database
 import imageio
 import time
-from threading import Thread
 
 
 class GlobalModel:
@@ -17,8 +16,7 @@ class GlobalModel:
     def add_observer(self, observer):
         raise NotImplementedError
 
-class VideoModel(GlobalModel):
-
+class VideoModel(QThread):
     total_frames = None
     observers = set()
     cap = None
@@ -28,8 +26,16 @@ class VideoModel(GlobalModel):
     camera = 0
     read_frame_via_opencv = False
 
+    frame = pyqtSignal(np.ndarray)
+    framenumber = pyqtSignal(int)
+    eeg_pos = pyqtSignal(int)
+
+
     def __init__(self, dyad, camera):
         super().__init__()
+        self.database = Database()
+        self.database.load_json("database.json")
+
         self.current_frame = 10
         self.dyad = dyad
         self.camera = camera
@@ -38,11 +44,29 @@ class VideoModel(GlobalModel):
         self.video_reader = imageio.get_reader(self.filepath)
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         self.set_start_pos()
-        self.keep_playing = False
-
+        self.keep_playing = True # Finished flag
 
         if(self.filepath != None):
             self.parse_filepath_attributes()
+
+    def start_play(self):
+        self.playback_start_frame = self.get_framenumber()
+        self.keep_playing = True
+        self.start()# Start playback thread
+
+    def stop_play(self):
+        self.keep_playing = False
+
+    def run(self):#Used by playback thread
+        playback_start = time.time()
+        pvrs = 0
+        while(self.keep_playing):
+            elapsed = time.time() - playback_start
+            framenumber = self.playback_start_frame + int((elapsed/25)*620)#Why 600 not 1000?
+            if(framenumber > pvrs):
+                self.set_framenumber(framenumber)
+            pvrs = framenumber
+            #self.get_frame(via_emit = True)
 
     def parse_filepath_attributes(self):
         dyad = -1
@@ -57,8 +81,7 @@ class VideoModel(GlobalModel):
         self.camera = camera
 
     def get_start_pos(self):
-        """ Returns beginning of video. Unit = EEG sampling frequency.
-        """
+        """ Returns beginning of video. Unit = EEG sampling frequency."""
         return self.start_in_eeg
 
     def set_dyad(self, dyad):
@@ -90,20 +113,15 @@ class VideoModel(GlobalModel):
             raise FileNotFoundError("Filepath not found in database")
         return ret
 
-
     def add_observer(self, observer):
         self.observers.add(observer)
 
-    def notify_observers(self):
-        for observer in self.observers:
-            observer.update("video")
-
     def get_pos(self):
-        return self.get_start_pos()+(self.current_frame/25)*500
+        pos = self.get_start_pos()+(self.current_frame/25)*500
+        return pos
 
-        #return self.get_start_pos()+self.current_frame
-
-    def get_frame(self):
+    def get_frame(self, via_emit = False):
+        frame = None
         if(self.read_frame_via_opencv):
             self.cap.set(1,self.current_frame)
             trial = 0
@@ -115,17 +133,24 @@ class VideoModel(GlobalModel):
             if(ret == False):
                 raise FileNotFoundError("Opencv couldnt retrive frames")
             else:
-                return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            #return self.cap.retrieve(self.current_frame)[1]
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         else:
-            return self.video_reader.get_data(self.current_frame)
+            frame = self.video_reader.get_data(self.current_frame)
+
+        if(via_emit):
+            self.frame.emit(frame)
+        else:
+            return frame
 
     def set_framenumber(self, x):
         if(x > self.total_frames):
             self.current_frame = self.total_frames-1
         else:
             self.current_frame = x
-        self.notify_observers()
+
+        self.framenumber.emit(x)
+        self.eeg_pos.emit(self.get_pos())
+        self.frame.emit(self.get_frame())#Necessary for sliderpos to update
 
     def get_framenumber(self):
         return self.current_frame
@@ -143,19 +168,17 @@ class VideoModel(GlobalModel):
     def get_amount_of_frames(self):
         return self.total_frames
 
-    def add_observer(self, observer):
-        self.observers.add(observer)
+    #def add_observer(self, observer):
+    #    self.observers.add(observer)
 
-    def notify_observers(self):
-        for observer in self.observers:
-            observer.update()
+    #def notify_observers(self):
+    #    self.msg_to_observers.emit("video")
 
 class DataModel(GlobalModel):
     data = None
     filepath = None
     title = None
     channel = None
-    updated = pyqtSignal()
     observers = set()
     is_deleted = False #When model is to be removed
 

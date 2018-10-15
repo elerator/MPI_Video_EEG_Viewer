@@ -31,31 +31,35 @@ class MainApp(QtGui.QMainWindow):
     def __init__(self, data_models, video, parent=None):
         super(MainApp, self).__init__(parent)
         self.models = data_models#type eeg display
-        self.video = video#type video display
+        self.video = video
         self.eeg_displays == None
 
         # Subscribe: Add self to all models that will be displayed in it (i.e. all models)
         for m in self.models:
             m.add_observer(self)
-        self.video.add_observer(self)
+
+        #self.video.add_observer(self)
 
         #Draw User Interface
         pyqtgraph.setConfigOption('background', 'w') #White background
         self.resize(1280, 640)
         self.setupUi()
 
+        #video.framenumber.connect(self.sld)
+        video.frame.connect(self.video_view.video_plot.update)
+
     def add_data_display(self):
         #Create new MODEL and append it to self.models
         model = DataModel()
         self.models.append(model)
 
-        #Subscribe
-        model.add_observer(self)
-
         #Create VIEW and add it (widget) to layout
         optiondisplay = DataView(model, self.video)
         self.eeg_displays.append(optiondisplay)
         self.verticalLayout.addWidget(optiondisplay)
+
+        #Subscribe
+        self.video.eeg_pos.connect(optiondisplay.data_plot.update)
 
         #redraw Add button at bottom
         self.verticalLayout.removeWidget(self.addDataDisplays)
@@ -73,6 +77,8 @@ class MainApp(QtGui.QMainWindow):
         self.sld.setRange(0, self.video.get_amount_of_frames()-1)
         self.sld.setTickPosition(QSlider.TicksAbove)
 
+        self.listWidget = QtGui.QListWidget(self.centralwidget)
+
         self.addDataDisplays = QtGui.QPushButton(self.centralwidget) #Draw (+) button to add data displays
         self.addDataDisplays.setText("+")
 
@@ -82,6 +88,7 @@ class MainApp(QtGui.QMainWindow):
         #4. Add elemtns to layout
         self.verticalLayout.addWidget(self.video_view)#ADD VIDEO HERE
         self.verticalLayout.addWidget(self.sld)
+        self.verticalLayout.addWidget(self.listWidget)
         self.verticalLayout.addWidget(self.addDataDisplays)
         self.draw_eeg_models()#Create and add EEG models
 
@@ -107,9 +114,6 @@ class MainApp(QtGui.QMainWindow):
                         view.update(msg)
                     else:
                         view.update(msg)
-            elif(msg == "video"):
-                if(isinstance(m, VideoModel)):
-                    view.update()
             else:
                 view.update()
 
@@ -118,8 +122,10 @@ class MainApp(QtGui.QMainWindow):
 
         for m in self.models:
             if(type(m) == type(DataModel())):
-
                 wrapped = DataView(m, self.video, self)
+
+                #Subscribe
+                self.video.eeg_pos.connect(wrapped.data_plot.update)
 
                 self.eeg_displays.append(wrapped)
                 self.verticalLayout.addWidget(wrapped)
@@ -155,6 +161,7 @@ class VideoView(QWidget):
         self.horizontalLayout.addWidget(self.video_plot)
         self.horizontalLayout.addWidget(self.options_group)
 
+    #@pyqtSlot()
     def update(self, msg = ""):
         self.video_plot.update()
         self.l1.setText("Channel:")
@@ -222,7 +229,8 @@ class VideoView(QWidget):
         self.open_dialog.clicked.connect(self.choose_ROI)
         self.frame_forward.clicked.connect(self.video_model.frame_forward)
         self.frame_back.clicked.connect(self.video_model.frame_back)
-
+        self.play.clicked.connect(self.video_model.start_play)
+        self.stop_vid.clicked.connect(self.video_model.stop_play)
 
         return self.groupBox
 
@@ -287,37 +295,12 @@ class DataView(QWidget):
     def delete(self):
         self.model.delete()
 
-"""class VideoPlot(QGraphicsView):
-    def __init__(self, video, parent=None):
-        super(VideoPlot, self).__init__(parent)
-        self.video = video
-        self.parent=parent
-        self.figure = plt.figure()
-        self.canvas = FigureCanvas(self.figure)
-        self.setMinimumSize(120, 210)
-
-        #Create Layout and add self
-        layout = QVBoxLayout()
-        layout.addWidget(self.canvas)
-        self.setLayout(layout)
-        self.canvas.show()
-
-    def update(self):
-        self.figure.clear()
-        self.axes=self.figure.add_subplot(1,1,1)
-
-        frame = self.video.get_frame()
-
-        im = self.axes.imshow(frame)
-        self.figure.subplots_adjust(left=0.0,bottom=0.0, top=1.0, right = 1.0)#Dont waste space
-        self.axes.axis('off')
-        self.canvas.draw()
-        self.canvas.show()"""
-
 class VideoPlot(QFrame):
 
     def __init__(self, video, parent=None, centered = True):
         super(VideoPlot, self).__init__(parent)
+
+        print("video_plot")
 
         self.video = video
         self.figure = plt.figure()
@@ -350,8 +333,9 @@ class VideoPlot(QFrame):
         scaledPix = self.pixmap.scaled(size, Qt.KeepAspectRatio, transformMode = Qt.SmoothTransformation)
         self.label.setPixmap(scaledPix)
 
-    def update(self):
-        frame = self.video.get_frame()
+    def update(self, frame = None):
+        if type(frame) == type(None):
+            frame = self.video.get_frame()
         height, width, channel = frame.shape
         bytesPerLine = 3 * width
         image = QImage(frame.data, width, height, bytesPerLine, QImage.Format_RGB888)
@@ -413,7 +397,7 @@ class InteractiveDataPlot(PlotWidget):
         self.indicator = self.plot_item.plot([pos,pos],[self.indicator_min,self.indicator_max],pen=pyqtgraph.mkPen(color=pyqtgraph.hsvColor(2),width=1))
 
 
-    def update(self, msg = ""):
+    def update(self, pos = 0, msg = ""):
         if(msg == "eeg"):#EEG datamodel changed
             self.print_data()
         C=pyqtgraph.hsvColor(1)
@@ -479,9 +463,6 @@ class MotionWindowSelector(QtGui.QMainWindow):
 
         #4. Add layout to widget
         self.groupBox.setLayout(vbox)
-
-        #5. connect
-
 
         return self.groupBox
 
