@@ -4,7 +4,7 @@ import numpy as np
 import pylab
 import time
 import pyqtgraph
-from PyQt5.QtGui import QGraphicsView, QPixmap, QImage, QFrame
+from PyQt5.QtGui import QGraphicsView, QPixmap, QImage, QFrame, QScrollArea
 from pyqtgraph import PlotWidget, PlotItem
 from PyQt5.QtCore import Qt, QObject, QEvent
 from PyQt5.QtWidgets import (QSizePolicy, QSlider)
@@ -25,47 +25,21 @@ def _translate(context, text, disambig):
     return QtGui.QApplication.translate(context, text, disambig)
 
 class MainApp(QtGui.QMainWindow):
-    eeg_displays = [] #type DataView
-    models = []
 
     def __init__(self, data_models, video, parent=None):
         super(MainApp, self).__init__(parent)
-        self.models = data_models#type eeg display
         self.video = video
-        self.eeg_displays == None
-
-        # Subscribe: Add self to all models that will be displayed in it (i.e. all models)
-        for m in self.models:
-            m.add_observer(self)
-
-        #self.video.add_observer(self)
 
         #Draw User Interface
         pyqtgraph.setConfigOption('background', 'w') #White background
         self.resize(1280, 640)
-        self.setupUi()
+        self.setupUi(data_models, video)
 
-        #video.framenumber.connect(self.sld)
+        #Make additional connections
         video.frame.connect(self.video_view.video_plot.update)
 
-    def add_data_display(self):
-        #Create new MODEL and append it to self.models
-        model = DataModel()
-        self.models.append(model)
 
-        #Create VIEW and add it (widget) to layout
-        optiondisplay = DataView(model, self.video)
-        self.eeg_displays.append(optiondisplay)
-        self.verticalLayout.addWidget(optiondisplay)
-
-        #Subscribe
-        self.video.eeg_pos.connect(optiondisplay.data_plot.update)
-
-        #redraw Add button at bottom
-        self.verticalLayout.removeWidget(self.addDataDisplays)
-        self.verticalLayout.addWidget(self.addDataDisplays)
-
-    def setupUi(self):
+    def setupUi(self, data_models, video_model):
         # 1. Create Widget
         self.centralwidget = QtGui.QWidget(self)
 
@@ -77,60 +51,114 @@ class MainApp(QtGui.QMainWindow):
         self.sld.setRange(0, self.video.get_amount_of_frames()-1)
         self.sld.setTickPosition(QSlider.TicksAbove)
 
-        self.listWidget = QtGui.QListWidget(self.centralwidget)
-
-        self.addDataDisplays = QtGui.QPushButton(self.centralwidget) #Draw (+) button to add data displays
-        self.addDataDisplays.setText("+")
+        self.listWidget = DataListView(data_models, video_model)
 
         #3.Create Layout
         self.verticalLayout = QtGui.QVBoxLayout(self.centralwidget)
 
-        #4. Add elemtns to layout
+        #4. Add elements to layout
         self.verticalLayout.addWidget(self.video_view)#ADD VIDEO HERE
         self.verticalLayout.addWidget(self.sld)
+
+        #TODO
         self.verticalLayout.addWidget(self.listWidget)
-        self.verticalLayout.addWidget(self.addDataDisplays)
-        self.draw_eeg_models()#Create and add EEG models
 
         #5. Connect navigation elements to respective slots
         self.sld.valueChanged.connect(self.video.set_framenumber)
-        self.addDataDisplays.clicked.connect(self.add_data_display)
 
         self.setCentralWidget(self.centralwidget)
         self.setWindowTitle(QtGui.QApplication.translate("EEG Viewer", "EEG Viewer", None))
-        QtCore.QMetaObject.connectSlotsByName(self)
 
-    def update(self, msg = ""):
-        self.video_view.update()
+        #QtCore.QMetaObject.connectSlotsByName(self)
 
-        #Update all views
-        for m,view,count in zip(self.models,self.eeg_displays,range(0,len(self.eeg_displays))):
-            if(msg == "eeg"):#eeg data changed if this message is sent
-                if(type(m) == type(DataModel())):
-                    if(m.deleted()):
-                        del(self.eeg_displays[count])
-                        del(self.models[count])
-                        self.setupUi()
-                        view.update(msg)
-                    else:
-                        view.update(msg)
-            else:
-                view.update()
+class DataListView(QWidget):
+    def __init__(self, datamodels = [], videomodel = None, parent = None):
+        super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Expanding)
 
-    def draw_eeg_models(self):
-        self.eeg_displays=[]#Make sure list is empty BEEEEEFORE redrawing!!!
 
-        for m in self.models:
-            if(type(m) == type(DataModel())):
-                wrapped = DataView(m, self.video, self)
+        self.videomodel = videomodel
+        self.datamodels = []#Use self.add_data_display() tQtGui.QListWidget(self.centralwidget)o append
+        self.dataviews = []
+        pyqtgraph.setConfigOption('background', 'w') #White background
+        self.setup_ui(datamodels)
+        self.addDataDisplays.clicked.connect(self.add_data_display)
 
-                #Subscribe
-                self.video.eeg_pos.connect(wrapped.data_plot.update)
 
-                self.eeg_displays.append(wrapped)
-                self.verticalLayout.addWidget(wrapped)
-                self.verticalLayout.removeWidget(self.addDataDisplays)
-                self.verticalLayout.addWidget(self.addDataDisplays)
+    def setup_ui(self, datamodels):
+        p = self.palette()
+        p.setColor(self.backgroundRole(), Qt.red)
+        self.setPalette(p)
+
+        self.datamodels = []#Use self.add_data_display() to append
+        self.dataviews = []
+
+        self.centralwidget = QtGui.QWidget(self)
+        #self.centralwidget.setMinimumSize(600, 400)
+
+        self.scrollarea = QScrollArea(self)
+        self.scrollarea.setWidgetResizable(True)
+
+        #Create layout
+        self.verticalLayout = QtGui.QVBoxLayout(self.centralwidget)
+
+        #Create couple of elements
+        self.addDataDisplays = QtGui.QPushButton(self) #Draw (+) button to add data displays
+        self.addDataDisplays.setText("+")
+        #self.verticalLayout.addWidget(self.addDataDisplays)
+
+        for model in datamodels:
+            self.add_data_display(model)
+            self.datamodels.append(model)
+
+        #add elements to layout
+        self.scrollarea.setGeometry(self.geometry())
+        self.scrollarea.setWidget(self.centralwidget)
+
+    def delete(self, datadisplay):
+        self.verticalLayout.removeWidget(self.addDataDisplays)
+
+        idx = self.dataviews.index(datadisplay)
+
+        readd_models = self.datamodels.copy()
+        del readd_models[idx]
+
+        self.datamodels = []#Use self.add_data_display() to append
+        self.dataviews = []
+
+        self.centralwidget = QtGui.QWidget(self)
+        self.verticalLayout = QtGui.QVBoxLayout(self.centralwidget)
+
+        for model in readd_models:
+            self.add_data_display(model)
+            #self.datamodels.append(model)
+
+        self.scrollarea.setWidget(self.centralwidget)
+
+        #redraw Add button at bottom
+        self.verticalLayout.addWidget(self.addDataDisplays)
+
+    def add_data_display(self, model = None):
+        self.verticalLayout.removeWidget(self.addDataDisplays)
+
+        #Create new MODEL and append it to self.models
+        if type(model) != type(DataModel()):
+            model = DataModel()
+
+        self.datamodels.append(model)#
+
+
+        #Create VIEW and add it (widget) to layout
+        optiondisplay = DataView(model, video_model = self.videomodel, container = self)#such that child can tell parent it's dead
+        self.dataviews.append(optiondisplay)
+        self.verticalLayout.addWidget(optiondisplay)
+
+        self.verticalLayout.addWidget(self.addDataDisplays)
+
+        #Subscribe
+        self.videomodel.eeg_pos.connect(optiondisplay.data_plot.update)
+        model.channeldata.connect(optiondisplay.data_plot.print_data)
+
 
 class VideoView(QWidget):
     def __init__(self, video_model = None, parent=None):
@@ -239,10 +267,11 @@ class VideoView(QWidget):
 
 class DataView(QWidget):
 
-    def __init__(self, model, video_model = None, parent=None):
+    def __init__(self, model, video_model = None, container = None, parent=None):#Parent is container
         super(QtGui.QWidget,self).__init__(parent)
         self.model = model
         self.video_model = video_model
+        self.container = container
         self.horizontalLayout = QtGui.QHBoxLayout()
         self.horizontalLayout.setSpacing(20)
         self.setLayout(self.horizontalLayout)####IMPORTANT
@@ -293,7 +322,7 @@ class DataView(QWidget):
         return self.groupBox
 
     def delete(self):
-        self.model.delete()
+        self.container.delete(self)
 
 class VideoPlot(QFrame):
 
@@ -349,6 +378,7 @@ class DataPlot(FigureCanvas):
     def __init__(self, model, parent=None, width=5, height=4, dpi=100):
         self.model = model
 
+
         fig = Figure(figsize=(width, height), dpi=dpi)
         self.axes = fig.add_subplot(111)
 
@@ -370,6 +400,9 @@ class DataPlot(FigureCanvas):
 class InteractiveDataPlot(PlotWidget):
     def __init__(self, model, video_model = None, parent=None, width=5, height=4, dpi=100):
         super().__init__(parent)
+
+        assert type(model) != type(True)
+
         self.main_plot = None
         self.indicator = None
         self.video_model = video_model
