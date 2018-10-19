@@ -5,6 +5,7 @@ from model import *
 class DataController(QDialog):
         NumGridRows = 3
         NumButtons = 4
+        title = pyqtSignal(str)
 
         def __call__(self):
             self.show()
@@ -58,6 +59,9 @@ class DataController(QDialog):
                 self.dyad = n
             except KeyError:
                 QMessageBox.about(self, "Invalid value", "The datapoint was not found in the database.\nPlease adjust your selection")
+
+            self.title.emit("Dyad: " + str(n))
+
 
         def set_channel_or_vid(self, n):
             if(self.datatype == "eeg"):

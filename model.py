@@ -3,18 +3,12 @@ import cv2
 import numpy as np
 import os
 import matplotlib.pyplot as plt
-from PyQt5.QtCore import pyqtSignal, QThread
+from PyQt5.QtCore import pyqtSignal, QThread, QObject
+import PyQt5.QtCore as QtCore
 from database import Database
 import imageio
 import time
 
-
-class GlobalModel:
-    def __init__(self):
-        self.database = Database()
-        self.database.load_json("database.json")
-    def add_observer(self, observer):
-        raise NotImplementedError
 
 class VideoModel(QThread):
     total_frames = None
@@ -30,24 +24,48 @@ class VideoModel(QThread):
     framenumber = pyqtSignal(int)
     eeg_pos = pyqtSignal(int)
 
-
-    def __init__(self, dyad, camera):
+    def __init__(self, dyad, camera, update_via_slider = True, filepath = None):
         super().__init__()
         self.database = Database()
         self.database.load_json("database.json")
 
-        self.current_frame = 10
-        self.dyad = dyad
-        self.camera = camera
-        self.filepath = self.get_filepath()
+        if isinstance(filepath, str):
+            self.parse_filepath_attributes()
+        else:
+            self.current_frame = 10
+            self.dyad = dyad
+            self.camera = camera
+            self.filepath = self.get_filepath()
+
         self.cap = cv2.VideoCapture(self.filepath)
         self.video_reader = imageio.get_reader(self.filepath)
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         self.set_start_pos()
         self.keep_playing = True # Finished flag
+        self.accept_external_control = True #False during play
 
-        if(self.filepath != None):
-            self.parse_filepath_attributes()
+    def change_video(self, dyad, camera):
+        try:
+            filepath = self.get_filepath()
+        except:
+            return False
+
+        self.filepath = self.get_filepath()
+
+        self.dyad = dyad
+        self.camera = camera
+
+        self.cap = cv2.VideoCapture(self.filepath)
+
+        self.video_reader = imageio.get_reader(self.filepath)
+        self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.set_start_pos()
+
+        self.keep_playing = True # Finished flag
+        self.accept_external_control = True #False during play
+        self.frame.emit(self.get_frame())
+        return True
+
 
     def start_play(self):
         self.playback_start_frame = self.get_framenumber()
@@ -58,15 +76,17 @@ class VideoModel(QThread):
         self.keep_playing = False
 
     def run(self):#Used by playback thread
+        self.accept_external_control = False
         playback_start = time.time()
         pvrs = 0
         while(self.keep_playing):
             elapsed = time.time() - playback_start
-            framenumber = self.playback_start_frame + int((elapsed/25)*620)#Why 600 not 1000?
+            framenumber = self.playback_start_frame + int((elapsed/(1.0/25.0)))#Why 600 not 1000?
             if(framenumber > pvrs):
-                self.set_framenumber(framenumber)
+                self._set_framenumber(framenumber)
             pvrs = framenumber
-            #self.get_frame(via_emit = True)
+            #QtCore.QCoreApplication.processEvents()
+        self.accept_external_control = True
 
     def parse_filepath_attributes(self):
         dyad = -1
@@ -87,9 +107,15 @@ class VideoModel(QThread):
     def set_dyad(self, dyad):
         self.dyad = dyad
 
-    def set_start_pos(self):###########################!!!!!!!!!!!!!!!!!!!!!!!!!!toxic
+    def get_dyad(self):
+        return self.dyad
+
+    def get_camera(self):
+        return self.camera
+
+    def set_start_pos(self):
         dyad = self.dyad
-        pos = 10000000000000000
+        pos = 10000000000000000#random largest number
         pair = self.database.get_dict()
         try:
             for key, value in pair[str(dyad)]['eeg']['metainfo']['description'].items():#Search for R128
@@ -143,6 +169,10 @@ class VideoModel(QThread):
             return frame
 
     def set_framenumber(self, x):
+        if(self.accept_external_control):
+            self._set_framenumber(x)
+
+    def _set_framenumber(self, x):
         if(x > self.total_frames):
             self.current_frame = self.total_frames-1
         else:
@@ -151,6 +181,7 @@ class VideoModel(QThread):
         self.framenumber.emit(x)
         self.eeg_pos.emit(self.get_pos())
         self.frame.emit(self.get_frame())#Necessary for sliderpos to update
+
 
     def get_framenumber(self):
         return self.current_frame
@@ -168,13 +199,8 @@ class VideoModel(QThread):
     def get_amount_of_frames(self):
         return self.total_frames
 
-    #def add_observer(self, observer):
-    #    self.observers.add(observer)
 
-    #def notify_observers(self):
-    #    self.msg_to_observers.emit("video")
-
-class DataModel(GlobalModel):
+class DataModel(QObject):
     data = None
     filepath = None
     title = None
@@ -182,8 +208,13 @@ class DataModel(GlobalModel):
     observers = set()
     is_deleted = False #When model is to be removed
 
+    channeldata = pyqtSignal(np.ndarray)
+    dyad_number = pyqtSignal(int)
+
     def __init__(self, filepath = None, channel = 0, dyad = None, datatype = None):
         super().__init__()
+        self.database = Database()
+        self.database.load_json("database.json")
         self.filepath = filepath
         self.is_deleted = False
         self.datatype = None
@@ -197,6 +228,8 @@ class DataModel(GlobalModel):
             self.load_eeg_file()
 
         elif(type(dyad) != type(None)):
+            self.set_title("Dyad " + str(dyad))
+
             if(type(datatype) == type(None)):
                 raise ValueError("Init via dyad requires specification of datatype")
             self.datatype = datatype
@@ -217,7 +250,7 @@ class DataModel(GlobalModel):
             pass
         else:
             raise NotImplementedError("Motion not supported yet")
-        self.notify_observers()
+        self.dyad_number.emit(dyad)
 
     def get_filepath(self):
         if(self.datatype == "eeg"):
@@ -234,11 +267,10 @@ class DataModel(GlobalModel):
     def set_channel(self, channel):
         self.channel = channel
         self.load_eeg_file()
-        self.notify_observers()
 
     def set_filepath(self, filepath):
         self.filepath = filepath
-        self.set_title(os.path.basename(self.filepath) + "    Channel " + str(self.channel))
+        #self.set_title(os.path.basename(self.filepath) + "    Channel " + str(self.channel))
 
     def set_title(self, title):
         self.title = title
@@ -249,31 +281,17 @@ class DataModel(GlobalModel):
     def get_data(self):
         return self.data
 
-    def delete(self):
-        self.is_deleted = True
-        self.notify_observers()
-
     def deleted(self):
         return self.is_deleted
-
-    def add_observer(self, observer):
-        self.observers.add(observer)
-
-    def notify_observers(self):
-        for observer in self.observers:
-            observer.update("eeg")
 
     def change_channel(self, channel):
         self.channel = channel
         self.load_eeg_file()
-        self.notify_observers(self)
 
     def load_eeg_file(self):
         if(self.filepath==None):
             print("No filepath set")
             return None
-
-        self.set_title(os.path.basename(self.filepath) )
 
         n_channels = 64
         bytes_per_sample = 2 #Because int16
@@ -290,5 +308,4 @@ class DataModel(GlobalModel):
         data[data==-32767] = np.nan
 
         self.data = data
-
-        self.notify_observers()
+        self.channeldata.emit(data)
